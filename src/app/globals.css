@@ -1,0 +1,70 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@layer base {
+  body {
+    @apply bg-dark text-cream antialiased;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-dark;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-dark-lighter rounded-full;
+  }
+
+  input[type='range'] {
+    @apply appearance-none bg-transparent cursor-pointer;
+  }
+
+  input[type='range']::-webkit-slider-track {
+    @apply h-2 rounded-full bg-dark-lighter;
+  }
+
+  input[type='range']::-webkit-slider-thumb {
+    @apply appearance-none w-5 h-5 rounded-full bg-flame-gradient border-2 border-cream;
+    margin-top: -6px;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply px-6 py-3 rounded-xl font-semibold text-cream
+           bg-gradient-to-r from-coral to-berry
+           hover:from-coral-light hover:to-berry-light
+           active:scale-95 transition-all duration-200
+           shadow-lg shadow-coral/20;
+  }
+
+  .btn-secondary {
+    @apply px-6 py-3 rounded-xl font-semibold text-cream
+           bg-dark-lighter border border-cream/10
+           hover:border-coral/30 hover:bg-dark-light
+           active:scale-95 transition-all duration-200;
+  }
+
+  .card-glass {
+    @apply bg-dark-light/80 backdrop-blur-xl rounded-card
+           border border-cream/5 shadow-xl;
+  }
+
+  .input-field {
+    @apply w-full px-4 py-3 rounded-xl bg-dark-lighter
+           border border-cream/10 text-cream placeholder-cream/30
+           focus:border-coral/50 focus:ring-1 focus:ring-coral/30
+           focus:outline-none transition-all duration-200;
+  }
+
+  .shimmer {
+    @apply bg-gradient-to-r from-dark-lighter via-coral/10 to-dark-lighter
+           bg-[length:200%_100%] animate-shimmer rounded-card;
+  }
+}
