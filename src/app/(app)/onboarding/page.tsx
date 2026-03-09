@@ -71,25 +71,44 @@ export default function OnboardingPage() {
       }
 
       // Ensure user row exists (trigger may not have fired)
-      await supabase.from('users').upsert(
+      const { error: userError } = await supabase.from('users').upsert(
         { id: user.id, email: user.email ?? '' },
         { onConflict: 'id' }
       );
 
-      // Insert user preferences
-      const { error: prefError } = await supabase.from('user_preferences').upsert(
-        {
-          user_id: user.id,
-          investment_goals: investmentGoals,
-          regions: regions,
-          property_types: propertyTypes,
-          budget_min: budgetMin,
-          budget_max: budgetMax,
-          no_gos: noGos,
-          specials: specials,
-        },
-        { onConflict: 'user_id' }
-      );
+      if (userError) {
+        console.error('User upsert error:', userError);
+        setError('Fehler beim Speichern. Bitte versuche es erneut.');
+        setSaving(false);
+        return;
+      }
+
+      // Save user preferences – try update first, then insert
+      const prefData = {
+        user_id: user.id,
+        investment_goals: investmentGoals,
+        regions: regions,
+        property_types: propertyTypes,
+        budget_min: budgetMin,
+        budget_max: budgetMax,
+        no_gos: noGos,
+        specials: specials,
+      };
+
+      const { data: existing } = await supabase
+        .from('user_preferences')
+        .select('id')
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+      const { error: prefError } = existing
+        ? await supabase
+            .from('user_preferences')
+            .update(prefData)
+            .eq('user_id', user.id)
+        : await supabase
+            .from('user_preferences')
+            .insert(prefData);
 
       if (prefError) {
         console.error('Preferences save error:', prefError);
