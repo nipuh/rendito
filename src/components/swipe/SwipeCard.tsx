@@ -24,6 +24,17 @@ const propertyTypeLabels: Record<string, string> = {
   gewerbe: 'Gewerbe',
 };
 
+function getMehrwert(property: Property): string | null {
+  if (property.is_provisionsfrei) return 'Provisionsfrei';
+  if (property.living_area && property.price) {
+    const pricePerSqm = Math.round(property.price / property.living_area);
+    return `${new Intl.NumberFormat('de-DE').format(pricePerSqm)} €/m²`;
+  }
+  if (property.rooms && property.rooms >= 5) return `${property.rooms} Zimmer`;
+  if (property.year_built && property.year_built >= 2015) return 'Neubau';
+  return null;
+}
+
 export default function SwipeCard({ property, onSwipe, isTop, stackIndex }: SwipeCardProps) {
   const [dragState, setDragState] = useState({ x: 0, y: 0, isDragging: false });
   const [isExpanded, setIsExpanded] = useState(false);
@@ -215,6 +226,14 @@ export default function SwipeCard({ property, onSwipe, isTop, stackIndex }: Swip
 
           {/* Bottom info overlay */}
           <div className="absolute bottom-0 left-0 right-0 p-5 z-10">
+            {(() => {
+              const mehrwert = getMehrwert(property);
+              return mehrwert ? (
+                <span className="inline-block px-3 py-1 mb-2 rounded-full text-xs font-semibold uppercase tracking-wider bg-green-500/20 text-green-400 border border-green-500/30">
+                  {mehrwert}
+                </span>
+              ) : null;
+            })()}
             <h3 className="text-xl font-bold text-cream leading-tight mb-1 drop-shadow-lg">
               {formatPrice(property.price)}
             </h3>
