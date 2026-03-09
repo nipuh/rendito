@@ -154,12 +154,19 @@ export default function SwipePage() {
       setSwipeCount(newCount);
 
       // Insert swipe record
-      await supabase.from('swipes').insert({
-        user_id: userId,
-        property_id: propertyId,
-        direction,
-        swiped_at: new Date().toISOString(),
-      });
+      const { error } = await supabase.from('swipes').upsert(
+        {
+          user_id: userId,
+          property_id: propertyId,
+          direction,
+          swiped_at: new Date().toISOString(),
+        },
+        { onConflict: 'user_id,property_id' }
+      );
+
+      if (error) {
+        console.error('Failed to save swipe:', error.message);
+      }
     },
     [userId, swipeCount, supabase]
   );

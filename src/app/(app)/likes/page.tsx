@@ -35,23 +35,38 @@ export default function LikesPage() {
         return;
       }
 
-      const { data, error } = await supabase
+      // Step 1: Fetch liked swipes
+      const { data: swipes, error: swipesError } = await supabase
         .from('swipes')
-        .select('swiped_at, property:properties(*)')
+        .select('property_id, swiped_at')
         .eq('user_id', user.id)
         .eq('direction', 'like')
         .order('swiped_at', { ascending: false });
 
-      if (error || !data) {
+      if (swipesError || !swipes || swipes.length === 0) {
         setIsLoading(false);
         return;
       }
 
-      const mapped = data
-        .filter((row: Record<string, unknown>) => row.property != null)
-        .map((row: Record<string, unknown>) => ({
-          ...(row.property as Property),
-          swiped_at: row.swiped_at as string,
+      // Step 2: Fetch the corresponding properties
+      const propertyIds = swipes.map((s) => s.property_id);
+      const { data: propertyData, error: propertiesError } = await supabase
+        .from('properties')
+        .select('*')
+        .in('id', propertyIds);
+
+      if (propertiesError || !propertyData) {
+        setIsLoading(false);
+        return;
+      }
+
+      // Step 3: Merge swipe timestamps with property data
+      const propertyMap = new Map(propertyData.map((p) => [p.id, p as Property]));
+      const mapped = swipes
+        .filter((s) => propertyMap.has(s.property_id))
+        .map((s) => ({
+          ...propertyMap.get(s.property_id)!,
+          swiped_at: s.swiped_at as string,
         }));
 
       setProperties(mapped);
