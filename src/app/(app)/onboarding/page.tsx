@@ -70,6 +70,12 @@ export default function OnboardingPage() {
         return;
       }
 
+      // Ensure user row exists (trigger may not have fired)
+      await supabase.from('users').upsert(
+        { id: user.id, email: user.email ?? '' },
+        { onConflict: 'id' }
+      );
+
       // Insert user preferences
       const { error: prefError } = await supabase.from('user_preferences').upsert(
         {
@@ -86,6 +92,7 @@ export default function OnboardingPage() {
       );
 
       if (prefError) {
+        console.error('Preferences save error:', prefError);
         setError('Fehler beim Speichern. Bitte versuche es erneut.');
         setSaving(false);
         return;
@@ -105,7 +112,8 @@ export default function OnboardingPage() {
       }
 
       router.push('/swipe');
-    } catch {
+    } catch (err) {
+      console.error('Onboarding save error:', err);
       setError('Etwas ist schiefgelaufen. Bitte versuche es erneut.');
       setSaving(false);
     }
