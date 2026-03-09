@@ -30,6 +30,36 @@ function ShimmerSkeleton() {
   );
 }
 
+function SearchingOverlay() {
+  return (
+    <div className="flex flex-col items-center justify-center h-full text-center px-8 gap-6">
+      <div className="relative">
+        <div className="text-6xl animate-bounce">🔍</div>
+        <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-12 h-2 bg-cream/10 rounded-full blur-sm animate-pulse" />
+      </div>
+      <h2 className="text-xl font-bold text-cream">
+        Suche neue Objekte...
+      </h2>
+      <p className="text-cream/50 text-sm leading-relaxed max-w-xs">
+        Wir durchsuchen ImmoScout24, Immowelt und Kleinanzeigen nach passenden Immobilien fuer dich.
+      </p>
+      <div className="flex gap-3 mt-2">
+        <PlatformBadge name="ImmoScout24" />
+        <PlatformBadge name="Immowelt" />
+        <PlatformBadge name="Kleinanzeigen" />
+      </div>
+    </div>
+  );
+}
+
+function PlatformBadge({ name }: { name: string }) {
+  return (
+    <span className="px-3 py-1.5 bg-dark-lighter/60 border border-cream/10 rounded-full text-cream/60 text-xs font-medium animate-pulse">
+      {name}
+    </span>
+  );
+}
+
 function LimitOverlay() {
   return (
     <div className="flex flex-col items-center justify-center h-full text-center px-8 gap-6">
@@ -53,6 +83,7 @@ export default function SwipePage() {
   const [properties, setProperties] = useState<Property[]>([]);
   const [swipeCount, setSwipeCount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
+  const [isSearching, setIsSearching] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
 
   const supabase = createClient();
@@ -62,6 +93,58 @@ export default function SwipePage() {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   };
+
+  // Fetch live properties from real estate platforms
+  const fetchLiveProperties = useCallback(
+    async (prefs: Record<string, unknown> | null, swipedIds: string[]) => {
+      setIsSearching(true);
+      try {
+        // Build search params from user preferences
+        const searchBody: Record<string, unknown> = {};
+        if (prefs) {
+          const regions = prefs.regions as Array<{ city?: string; plz?: string }> | undefined;
+          if (regions && regions.length > 0) {
+            searchBody.city = regions[0].city || undefined;
+            searchBody.zipCode = regions[0].plz || undefined;
+          }
+          if ((prefs.budget_min as number) > 0) searchBody.priceMin = prefs.budget_min;
+          if ((prefs.budget_max as number) > 0) searchBody.priceMax = prefs.budget_max;
+          const propertyTypes = prefs.property_types as string[] | undefined;
+          if (propertyTypes && propertyTypes.length > 0) {
+            searchBody.propertyType = propertyTypes[0];
+          }
+        }
+
+        const response = await fetch('/api/properties/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(searchBody),
+        });
+
+        if (!response.ok) {
+          console.warn('[SwipePage] Search API returned', response.status);
+          return;
+        }
+
+        const data = await response.json();
+        const fetchedProperties = (data.properties ?? []) as Property[];
+
+        // Filter out already-swiped properties
+        const newProperties = fetchedProperties.filter(
+          (p) => !swipedIds.includes(p.id)
+        );
+
+        if (newProperties.length > 0) {
+          setProperties(newProperties);
+        }
+      } catch (err) {
+        console.error('[SwipePage] Error fetching live properties:', err);
+      } finally {
+        setIsSearching(false);
+      }
+    },
+    []
+  );
 
   // Fetch user, swipe count, and properties
   useEffect(() => {
@@ -137,8 +220,16 @@ export default function SwipePage() {
       }
 
       const { data: propertyData } = await query;
-      setProperties(propertyData ?? []);
-      setIsLoading(false);
+      const dbProperties = propertyData ?? [];
+
+      if (dbProperties.length > 0) {
+        setProperties(dbProperties);
+        setIsLoading(false);
+      } else {
+        // No properties in DB -- fetch live from real estate platforms
+        setIsLoading(false);
+        fetchLiveProperties(prefs, swipedIds);
+      }
     }
 
     init();
@@ -153,20 +244,27 @@ export default function SwipePage() {
       const newCount = swipeCount + 1;
       setSwipeCount(newCount);
 
-      // Insert swipe record
-      await supabase.from('swipes').insert({
-        user_id: userId,
-        property_id: propertyId,
-        direction,
-        swiped_at: new Date().toISOString(),
-      });
+      // Insert swipe record (skip for scraped-only IDs that aren't in DB)
+      if (!propertyId.startsWith('scraped-')) {
+        await supabase.from('swipes').insert({
+          user_id: userId,
+          property_id: propertyId,
+          direction,
+          swiped_at: new Date().toISOString(),
+        });
+      }
     },
     [userId, swipeCount, supabase]
   );
 
   const handleStackEmpty = useCallback(() => {
-    // Could trigger fetching more properties here
-  }, []);
+    // Trigger fetching more properties from live sources
+    if (!isSearching) {
+      const swipedIds = properties.map((p) => p.id);
+      fetchLiveProperties(null, swipedIds);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSearching, properties, fetchLiveProperties]);
 
   const remainingSwipes = Math.max(0, DAILY_SWIPE_LIMIT - swipeCount);
   const isAtLimit = swipeCount >= DAILY_SWIPE_LIMIT;
@@ -194,6 +292,8 @@ export default function SwipePage() {
           <ShimmerSkeleton />
         ) : isAtLimit ? (
           <LimitOverlay />
+        ) : isSearching && properties.length === 0 ? (
+          <SearchingOverlay />
         ) : (
           <SwipeStack
             properties={properties}
