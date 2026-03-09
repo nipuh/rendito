@@ -24,6 +24,18 @@ const propertyTypeLabels: Record<string, string> = {
   gewerbe: 'Gewerbe',
 };
 
+const platformLabels: Record<string, string> = {
+  immoscout24: 'ImmoScout24',
+  immowelt: 'Immowelt',
+  kleinanzeigen: 'Kleinanzeigen',
+};
+
+const platformColors: Record<string, string> = {
+  immoscout24: 'bg-orange-500/20 text-orange-300 border-orange-500/30',
+  immowelt: 'bg-blue-500/20 text-blue-300 border-blue-500/30',
+  kleinanzeigen: 'bg-green-500/20 text-green-300 border-green-500/30',
+};
+
 export default function SwipeCard({ property, onSwipe, isTop, stackIndex }: SwipeCardProps) {
   const [dragState, setDragState] = useState({ x: 0, y: 0, isDragging: false });
   const [isExpanded, setIsExpanded] = useState(false);
@@ -215,6 +227,10 @@ export default function SwipeCard({ property, onSwipe, isTop, stackIndex }: Swip
 
           {/* Bottom info overlay */}
           <div className="absolute bottom-0 left-0 right-0 p-5 z-10">
+            {/* Source platform badge */}
+            <span className={`inline-block px-2 py-0.5 mb-2 text-[10px] font-semibold uppercase tracking-wider rounded-md border ${platformColors[property.source_platform] || 'bg-cream/10 text-cream/60 border-cream/20'}`}>
+              {platformLabels[property.source_platform] || property.source_platform}
+            </span>
             <h3 className="text-xl font-bold text-cream leading-tight mb-1 drop-shadow-lg">
               {formatPrice(property.price)}
             </h3>
