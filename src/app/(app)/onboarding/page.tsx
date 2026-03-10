@@ -98,20 +98,18 @@ export default function OnboardingPage() {
         return;
       }
 
-      // Mark onboarding as completed
-      const { error: profileError } = await supabase
-        .from('users')
-        .update({ onboarding_completed: true })
-        .eq('id', user.id);
-
-      if (profileError) {
-        // Fallback: update auth user metadata
-        await supabase.auth.updateUser({
+      // Mark onboarding as completed (both DB and auth metadata for middleware)
+      await Promise.all([
+        supabase
+          .from('users')
+          .update({ onboarding_completed: true })
+          .eq('id', user.id),
+        supabase.auth.updateUser({
           data: { onboarding_completed: true },
-        });
-      }
+        }),
+      ]);
 
-      router.push('/swipe');
+      router.replace('/swipe');
     } catch (err) {
       console.error('Onboarding save error:', err);
       setError('Etwas ist schiefgelaufen. Bitte versuche es erneut.');

@@ -134,9 +134,34 @@ export default function SwipePage() {
         if (prefs.property_types?.length > 0) {
           query = query.in('property_type', prefs.property_types);
         }
+        // Filter out no-gos
+        if (prefs.no_gos?.includes('erbpacht')) {
+          query = query.neq('is_erbpacht', true);
+        }
+        if (prefs.no_gos?.includes('denkmalschutz')) {
+          query = query.neq('is_denkmalschutz', true);
+        }
       }
 
-      const { data: propertyData } = await query;
+      let { data: propertyData } = await query;
+
+      // If no matches with strict filters, try broader search (without property_type filter)
+      if ((!propertyData || propertyData.length === 0) && prefs) {
+        let fallbackQuery = supabase
+          .from('properties')
+          .select('*')
+          .eq('is_active', true)
+          .order('created_at', { ascending: false })
+          .limit(20);
+
+        if (swipedIds.length > 0) {
+          fallbackQuery = fallbackQuery.not('id', 'in', `(${swipedIds.join(',')})`);
+        }
+
+        const { data: fallbackData } = await fallbackQuery;
+        propertyData = fallbackData;
+      }
+
       setProperties(propertyData ?? []);
       setIsLoading(false);
     }
@@ -194,6 +219,16 @@ export default function SwipePage() {
           <ShimmerSkeleton />
         ) : isAtLimit ? (
           <LimitOverlay />
+        ) : properties.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-center px-8 gap-6">
+            <div className="text-6xl">🏠</div>
+            <h2 className="text-xl font-bold text-cream">
+              Noch keine Objekte verfuegbar
+            </h2>
+            <p className="text-cream/50 text-sm leading-relaxed max-w-xs">
+              Wir suchen gerade nach passenden Immobilien fuer dich. Schau gleich nochmal vorbei!
+            </p>
+          </div>
         ) : (
           <SwipeStack
             properties={properties}

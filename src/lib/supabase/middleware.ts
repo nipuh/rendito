@@ -36,6 +36,8 @@ export async function updateSession(request: NextRequest) {
   const isPublicRoute = request.nextUrl.pathname === '/' ||
     request.nextUrl.pathname.startsWith('/api/auth');
 
+  const isOnboardingRoute = request.nextUrl.pathname.startsWith('/onboarding');
+
   // Redirect unauthenticated users to login
   if (!user && !isAuthRoute && !isPublicRoute) {
     const url = request.nextUrl.clone();
@@ -48,6 +50,27 @@ export async function updateSession(request: NextRequest) {
     const url = request.nextUrl.clone();
     url.pathname = '/swipe';
     return NextResponse.redirect(url);
+  }
+
+  // Redirect authenticated users who haven't completed onboarding
+  if (user && !isAuthRoute && !isPublicRoute && !isOnboardingRoute) {
+    // Check onboarding status from user metadata (set during onboarding save)
+    const onboardingCompleted = user.user_metadata?.onboarding_completed;
+
+    if (!onboardingCompleted) {
+      // Double-check against the database
+      const { data: profile } = await supabase
+        .from('users')
+        .select('onboarding_completed')
+        .eq('id', user.id)
+        .single();
+
+      if (!profile?.onboarding_completed) {
+        const url = request.nextUrl.clone();
+        url.pathname = '/onboarding';
+        return NextResponse.redirect(url);
+      }
+    }
   }
 
   return supabaseResponse;
