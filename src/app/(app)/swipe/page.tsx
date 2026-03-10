@@ -154,18 +154,28 @@ export default function SwipePage() {
       setSwipeCount(newCount);
 
       // Insert swipe record
+      const swipeData = {
+        user_id: userId,
+        property_id: propertyId,
+        direction,
+        swiped_at: new Date().toISOString(),
+      };
+
+      // Try upsert first (requires UPDATE RLS policy), fall back to insert
       const { error } = await supabase.from('swipes').upsert(
-        {
-          user_id: userId,
-          property_id: propertyId,
-          direction,
-          swiped_at: new Date().toISOString(),
-        },
+        swipeData,
         { onConflict: 'user_id,property_id' }
       );
 
       if (error) {
-        console.error('Failed to save swipe:', error.message);
+        // Fallback: plain insert (works without UPDATE policy, ignores duplicates)
+        const { error: insertError } = await supabase
+          .from('swipes')
+          .insert(swipeData);
+
+        if (insertError && !insertError.message.includes('duplicate')) {
+          console.error('Failed to save swipe:', insertError.message);
+        }
       }
     },
     [userId, swipeCount, supabase]
