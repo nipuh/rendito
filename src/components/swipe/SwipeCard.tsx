@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useMemo } from 'react';
 import Image from 'next/image';
 import type { Property, SwipeDirection } from '@/types';
 
@@ -33,6 +33,96 @@ function getMehrwert(property: Property): string | null {
   if (property.rooms && property.rooms >= 5) return `${property.rooms} Zimmer`;
   if (property.year_built && property.year_built >= 2015) return 'Neubau';
   return null;
+// --- Smart Overlay Logic ---
+interface OverlayBadge {
+  text: string;
+  color: 'green' | 'gold' | 'coral' | 'blue';
+  icon: string;
+}
+
+function getSmartOverlays(property: Property): OverlayBadge[] {
+  const badges: OverlayBadge[] = [];
+
+  // Provisionsfrei
+  if (property.is_provisionsfrei) {
+    badges.push({ text: 'Provisionsfrei', color: 'green', icon: '✓' });
+  }
+
+  // Low price per sqm
+  if (property.living_area && property.price) {
+    const pricePerSqm = property.price / property.living_area;
+    if (pricePerSqm < 1500) {
+      badges.push({ text: `${Math.round(pricePerSqm)} €/m² – Top Preis!`, color: 'gold', icon: '💎' });
+    } else if (pricePerSqm < 2500) {
+      badges.push({ text: `${Math.round(pricePerSqm)} €/m²`, color: 'green', icon: '📊' });
+    }
+  }
+
+  // Mehrfamilienhaus = Renditeobjekt
+  if (property.property_type === 'mehrfamilienhaus') {
+    badges.push({ text: 'Renditeobjekt', color: 'gold', icon: '💰' });
+  }
+
+  // Good Faktor (price / estimated rent)
+  if (property.living_area && property.price) {
+    const estimatedRent = property.living_area * 8; // rough estimate 8€/sqm
+    const faktor = property.price / (estimatedRent * 12);
+    if (faktor < 15) {
+      badges.push({ text: `Faktor ${faktor.toFixed(1)} – Stark!`, color: 'gold', icon: '🔥' });
+    } else if (faktor < 20) {
+      badges.push({ text: `Faktor ~${faktor.toFixed(0)}`, color: 'green', icon: '📈' });
+    }
+  }
+
+  // Erbpacht warning
+  if (property.is_erbpacht) {
+    badges.push({ text: 'Erbpacht', color: 'coral', icon: '⚠️' });
+  }
+
+  // Denkmalschutz – can be interesting for tax benefits
+  if (property.is_denkmalschutz) {
+    badges.push({ text: 'Denkmalschutz-AfA möglich', color: 'blue', icon: '🏛️' });
+  }
+
+  return badges.slice(0, 3); // max 3 overlays
+}
+
+const badgeColorMap: Record<string, string> = {
+  green: 'bg-green-500/80 border-green-400/50',
+  gold: 'bg-amber-500/80 border-amber-400/50',
+  coral: 'bg-coral/80 border-coral-light/50',
+  blue: 'bg-blue-500/80 border-blue-400/50',
+};
+
+// --- Location advantages extraction ---
+function extractLocationAdvantages(property: Property): string[] {
+  const advantages: string[] = [];
+  const text = `${property.description_original || ''} ${property.description_ai || ''}`.toLowerCase();
+
+  const patterns: [RegExp, string][] = [
+    [/(?:zentral|innenstadtn|stadtzentrum|city|fußgängerzone)/, '🏙️ Zentrale Lage'],
+    [/(?:ruhig|ruhige lage|idyllisch|naturnahe?)/, '🌿 Ruhige Lage'],
+    [/(?:u-bahn|s-bahn|straßenbahn|tram|haltestelle|öpnv|bus|bahnhof|nahverkehr)/, '🚇 ÖPNV-Anbindung'],
+    [/(?:schule|kita|kindergarten|gymnasium)/, '🎓 Schulen & Kitas in der Nähe'],
+    [/(?:einkauf|supermarkt|nahversorg|geschäfte|laden)/, '🛒 Nahversorgung'],
+    [/(?:park|grünfläche|wald|see|fluss|natur|garten)/, '🌳 Grünflächen & Natur'],
+    [/(?:autobahn|a\d+|auffahrt|anbindung)/, '🚗 Gute Verkehrsanbindung'],
+    [/(?:universit|uni |hochschul|campus)/, '🎓 Uni-Nähe'],
+    [/(?:balkon|terrasse|loggia)/, '☀️ Balkon/Terrasse'],
+    [/(?:garage|stellplatz|tiefgarage|parkplatz|carport)/, '🅿️ Parkplatz/Garage'],
+    [/(?:aufzug|fahrstuhl|lift)/, '🛗 Aufzug'],
+    [/(?:neubau|erstbezug|kernsaniert|modernisiert|saniert)/, '✨ Modernisiert/Saniert'],
+    [/(?:fußboden|parkett|fliesen|vinyl)/, '🏠 Hochwertige Böden'],
+    [/(?:einbauküche|ebk)/, '🍳 Einbauküche'],
+  ];
+
+  for (const [regex, label] of patterns) {
+    if (regex.test(text)) {
+      advantages.push(label);
+    }
+  }
+
+  return advantages.slice(0, 8);
 }
 
 export default function SwipeCard({ property, onSwipe, isTop, stackIndex }: SwipeCardProps) {
@@ -43,8 +133,19 @@ export default function SwipeCard({ property, onSwipe, isTop, stackIndex }: Swip
   const startPos = useRef({ x: 0, y: 0 });
   const cardRef = useRef<HTMLDivElement>(null);
 
-  const SWIPE_THRESHOLD = 100;
+  // Image swipe state
+  const imgSwipeRef = useRef({ startX: 0, startY: 0, isSwiping: false, startTime: 0 });
+  const [imgSwipeOffset, setImgSwipeOffset] = useState(0);
 
+  const SWIPE_THRESHOLD = 100;
+  const IMG_SWIPE_THRESHOLD = 40;
+
+  const images = useMemo(() => Array.isArray(property.images) ? property.images.filter(Boolean) : [], [property.images]);
+  const overlays = useMemo(() => getSmartOverlays(property), [property]);
+  const locationAdvantages = useMemo(() => extractLocationAdvantages(property), [property]);
+  const totalImages = images.length;
+
+  // --- Card drag handlers ---
   const handleStart = useCallback((clientX: number, clientY: number) => {
     if (!isTop || isExpanded) return;
     startPos.current = { x: clientX, y: clientY };
@@ -72,7 +173,7 @@ export default function SwipeCard({ property, onSwipe, isTop, stackIndex }: Swip
     }
   }, [dragState, onSwipe]);
 
-  // Touch handlers
+  // Touch handlers for card
   const onTouchStart = (e: React.TouchEvent) => {
     handleStart(e.touches[0].clientX, e.touches[0].clientY);
   };
@@ -81,7 +182,7 @@ export default function SwipeCard({ property, onSwipe, isTop, stackIndex }: Swip
   };
   const onTouchEnd = () => handleEnd();
 
-  // Mouse handlers
+  // Mouse handlers for card
   const onMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
     handleStart(e.clientX, e.clientY);
@@ -93,6 +194,38 @@ export default function SwipeCard({ property, onSwipe, isTop, stackIndex }: Swip
   const onMouseLeave = () => {
     if (dragState.isDragging) handleEnd();
   };
+
+  // --- Image swipe handlers (for expanded gallery) ---
+  const handleImgSwipeStart = useCallback((clientX: number, clientY: number) => {
+    imgSwipeRef.current = { startX: clientX, startY: clientY, isSwiping: true, startTime: Date.now() };
+    setImgSwipeOffset(0);
+  }, []);
+
+  const handleImgSwipeMove = useCallback((clientX: number, clientY: number) => {
+    if (!imgSwipeRef.current.isSwiping) return;
+    const deltaX = clientX - imgSwipeRef.current.startX;
+    const deltaY = clientY - imgSwipeRef.current.startY;
+    // Only horizontal swipe
+    if (Math.abs(deltaX) > Math.abs(deltaY)) {
+      setImgSwipeOffset(deltaX);
+    }
+  }, []);
+
+  const handleImgSwipeEnd = useCallback(() => {
+    if (!imgSwipeRef.current.isSwiping) return;
+    imgSwipeRef.current.isSwiping = false;
+    const elapsed = Date.now() - imgSwipeRef.current.startTime;
+    const velocity = Math.abs(imgSwipeOffset) / Math.max(elapsed, 1);
+
+    if (Math.abs(imgSwipeOffset) > IMG_SWIPE_THRESHOLD || velocity > 0.5) {
+      if (imgSwipeOffset > 0 && activeImageIndex > 0) {
+        setActiveImageIndex((prev) => prev - 1);
+      } else if (imgSwipeOffset < 0 && activeImageIndex < totalImages - 1) {
+        setActiveImageIndex((prev) => prev + 1);
+      }
+    }
+    setImgSwipeOffset(0);
+  }, [imgSwipeOffset, activeImageIndex, totalImages]);
 
   // Programmatic swipe for buttons
   const triggerSwipe = useCallback((direction: SwipeDirection) => {
@@ -128,7 +261,7 @@ export default function SwipeCard({ property, onSwipe, isTop, stackIndex }: Swip
         pointerEvents: 'none' as const,
       };
 
-  const mainImage = property.images?.[activeImageIndex] || property.images?.[0];
+  const mainImage = images[activeImageIndex] || images[0];
 
   return (
     <div
@@ -185,10 +318,17 @@ export default function SwipeCard({ property, onSwipe, isTop, stackIndex }: Swip
             </div>
           )}
 
+          {/* Image counter badge */}
+          {totalImages > 1 && (
+            <div className="absolute top-4 right-4 px-2.5 py-1 bg-dark/70 backdrop-blur-sm rounded-full text-cream/90 text-xs font-medium z-10">
+              {activeImageIndex + 1} / {totalImages}
+            </div>
+          )}
+
           {/* Image pagination dots */}
-          {property.images?.length > 1 && (
-            <div className="absolute top-4 left-0 right-0 flex justify-center gap-1 z-10">
-              {property.images.slice(0, 8).map((_, i) => (
+          {totalImages > 1 && (
+            <div className="absolute top-4 left-0 right-16 flex justify-center gap-1 z-10">
+              {images.slice(0, 12).map((_, i) => (
                 <div
                   key={i}
                   className={`h-1 rounded-full transition-all ${
@@ -196,11 +336,29 @@ export default function SwipeCard({ property, onSwipe, isTop, stackIndex }: Swip
                   }`}
                 />
               ))}
+              {totalImages > 12 && (
+                <div className="w-2 h-1 rounded-full bg-cream/20" />
+              )}
+            </div>
+          )}
+
+          {/* Smart Overlay Badges */}
+          {overlays.length > 0 && (
+            <div className="absolute top-12 left-4 flex flex-col gap-1.5 z-10">
+              {overlays.map((badge, i) => (
+                <div
+                  key={i}
+                  className={`px-3 py-1.5 rounded-full text-xs font-bold text-white border backdrop-blur-md shadow-lg ${badgeColorMap[badge.color]}`}
+                  style={{ animationDelay: `${i * 0.1}s` }}
+                >
+                  {badge.icon} {badge.text}
+                </div>
+              ))}
             </div>
           )}
 
           {/* Tap zones for image nav */}
-          {!isExpanded && property.images?.length > 1 && (
+          {!isExpanded && totalImages > 1 && (
             <>
               <div
                 className="absolute top-0 left-0 w-1/3 h-3/4 z-[5]"
@@ -214,7 +372,7 @@ export default function SwipeCard({ property, onSwipe, isTop, stackIndex }: Swip
                 onClick={(e) => {
                   e.stopPropagation();
                   setActiveImageIndex((prev) =>
-                    Math.min((property.images?.length ?? 1) - 1, prev + 1)
+                    Math.min(totalImages - 1, prev + 1)
                   );
                 }}
               />
@@ -296,6 +454,131 @@ export default function SwipeCard({ property, onSwipe, isTop, stackIndex }: Swip
             {/* Title */}
             <h2 className="text-lg font-bold text-cream">{property.title}</h2>
 
+            {/* Swipeable Image Gallery */}
+            {totalImages > 1 && (
+              <div className="space-y-2">
+                <h4 className="text-sm font-semibold text-coral uppercase tracking-wider">
+                  Bilder ({totalImages})
+                </h4>
+                <div
+                  className="relative w-full aspect-[4/3] rounded-2xl overflow-hidden touch-pan-y"
+                  onTouchStart={(e) => {
+                    e.stopPropagation();
+                    handleImgSwipeStart(e.touches[0].clientX, e.touches[0].clientY);
+                  }}
+                  onTouchMove={(e) => {
+                    e.stopPropagation();
+                    handleImgSwipeMove(e.touches[0].clientX, e.touches[0].clientY);
+                  }}
+                  onTouchEnd={(e) => {
+                    e.stopPropagation();
+                    handleImgSwipeEnd();
+                  }}
+                >
+                  <div
+                    className="flex h-full transition-transform duration-300 ease-out"
+                    style={{
+                      width: `${totalImages * 100}%`,
+                      transform: `translateX(calc(-${(activeImageIndex * 100) / totalImages}% + ${imgSwipeOffset}px))`,
+                      transition: imgSwipeRef.current.isSwiping ? 'none' : 'transform 0.3s ease-out',
+                    }}
+                  >
+                    {images.map((img, i) => (
+                      <div
+                        key={i}
+                        className="relative h-full flex-shrink-0"
+                        style={{ width: `${100 / totalImages}%` }}
+                      >
+                        <Image
+                          src={img}
+                          alt={`${property.title} - Bild ${i + 1}`}
+                          fill
+                          className="object-cover"
+                          sizes="(max-width: 768px) 100vw, 400px"
+                        />
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Gallery navigation arrows */}
+                  {activeImageIndex > 0 && (
+                    <button
+                      className="absolute left-2 top-1/2 -translate-y-1/2 w-8 h-8 bg-dark/60 backdrop-blur-sm rounded-full flex items-center justify-center text-cream/80 z-10"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActiveImageIndex((prev) => prev - 1);
+                      }}
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                      </svg>
+                    </button>
+                  )}
+                  {activeImageIndex < totalImages - 1 && (
+                    <button
+                      className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 bg-dark/60 backdrop-blur-sm rounded-full flex items-center justify-center text-cream/80 z-10"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActiveImageIndex((prev) => prev + 1);
+                      }}
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      </svg>
+                    </button>
+                  )}
+
+                  {/* Gallery counter */}
+                  <div className="absolute bottom-2 right-2 px-2.5 py-1 bg-dark/70 backdrop-blur-sm rounded-full text-cream/90 text-xs font-medium z-10">
+                    {activeImageIndex + 1} / {totalImages}
+                  </div>
+                </div>
+
+                {/* Thumbnail strip */}
+                <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-hide">
+                  {images.map((img, i) => (
+                    <button
+                      key={i}
+                      className={`relative flex-shrink-0 w-14 h-14 rounded-lg overflow-hidden border-2 transition-all ${
+                        i === activeImageIndex
+                          ? 'border-coral shadow-md shadow-coral/20'
+                          : 'border-transparent opacity-60 hover:opacity-80'
+                      }`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActiveImageIndex(i);
+                      }}
+                    >
+                      <Image
+                        src={img}
+                        alt={`Thumbnail ${i + 1}`}
+                        fill
+                        className="object-cover"
+                        sizes="56px"
+                      />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Location Advantages */}
+            {locationAdvantages.length > 0 && (
+              <div className="bg-dark-lighter/60 backdrop-blur-sm rounded-2xl p-4 border border-cream/5 space-y-3">
+                <h4 className="text-sm font-semibold text-coral uppercase tracking-wider">Lage & Vorteile</h4>
+                <div className="flex flex-wrap gap-2">
+                  {locationAdvantages.map((advantage, i) => (
+                    <span
+                      key={i}
+                      className="px-3 py-1.5 bg-cream/5 border border-cream/10 rounded-full text-cream/80 text-xs font-medium"
+                    >
+                      {advantage}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Fact Box */}
             <div className="bg-dark-lighter/60 backdrop-blur-sm rounded-2xl p-4 border border-cream/5 space-y-3">
               <h4 className="text-sm font-semibold text-coral uppercase tracking-wider">Fakten</h4>
@@ -315,41 +598,81 @@ export default function SwipeCard({ property, onSwipe, isTop, stackIndex }: Swip
               </div>
             </div>
 
+            {/* Price Analysis Overlay */}
+            {property.living_area && property.price && (
+              <div className="bg-gradient-to-r from-dark-lighter/80 to-dark-lighter/40 backdrop-blur-sm rounded-2xl p-4 border border-coral/20 space-y-2">
+                <h4 className="text-sm font-semibold text-coral uppercase tracking-wider">Schnell-Analyse</h4>
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div className="flex flex-col">
+                    <span className="text-cream/40 text-xs">Preis pro m²</span>
+                    <span className="font-bold text-cream">{Math.round(property.price / property.living_area).toLocaleString('de-DE')} €/m²</span>
+                  </div>
+                  {(() => {
+                    const estimatedRent = property.living_area * 8;
+                    const faktor = property.price / (estimatedRent * 12);
+                    return (
+                      <>
+                        <div className="flex flex-col">
+                          <span className="text-cream/40 text-xs">Geschätzter Faktor</span>
+                          <span className={`font-bold ${faktor < 20 ? 'text-green-400' : faktor < 25 ? 'text-amber-400' : 'text-red-400'}`}>
+                            {faktor.toFixed(1)}x
+                          </span>
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="text-cream/40 text-xs">Gesch. Bruttomiete</span>
+                          <span className="font-medium text-cream/80">{formatPrice(estimatedRent)}/Mon.</span>
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="text-cream/40 text-xs">Bruttorendite (gesch.)</span>
+                          <span className={`font-bold ${(1 / faktor * 100) > 5 ? 'text-green-400' : (1 / faktor * 100) > 3.5 ? 'text-amber-400' : 'text-cream/80'}`}>
+                            {(1 / faktor * 100).toFixed(1)}%
+                          </span>
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
+              </div>
+            )}
+
             {/* AI Description */}
             {property.description_ai && (
               <div className="space-y-2">
                 <h4 className="text-sm font-semibold text-coral uppercase tracking-wider flex items-center gap-2">
                   <span>✨</span> KI-Zusammenfassung
                 </h4>
-                <p className="text-cream/70 text-sm leading-relaxed">{property.description_ai}</p>
+                <p className="text-cream/70 text-sm leading-relaxed whitespace-pre-line">{property.description_ai}</p>
               </div>
             )}
 
             {/* Original Description */}
             {property.description_original && (
               <div className="space-y-2">
-                <h4 className="text-sm font-semibold text-cream/50 uppercase tracking-wider">Beschreibung</h4>
-                <p className="text-cream/50 text-sm leading-relaxed line-clamp-6">{property.description_original}</p>
+                <h4 className="text-sm font-semibold text-cream/50 uppercase tracking-wider">Inserat-Beschreibung</h4>
+                <p className="text-cream/60 text-sm leading-relaxed whitespace-pre-line">{property.description_original}</p>
               </div>
             )}
 
-            {/* Additional Images */}
-            {property.images?.length > 1 && (
+            {/* Fallback if no descriptions at all */}
+            {!property.description_ai && !property.description_original && (
               <div className="space-y-2">
-                <h4 className="text-sm font-semibold text-coral uppercase tracking-wider">Bilder</h4>
-                <div className="grid grid-cols-2 gap-2">
-                  {property.images.slice(1, 7).map((img, i) => (
-                    <div key={i} className="relative aspect-video rounded-xl overflow-hidden">
-                      <Image
-                        src={img}
-                        alt={`${property.title} - Bild ${i + 2}`}
-                        fill
-                        className="object-cover"
-                        sizes="200px"
-                      />
-                    </div>
-                  ))}
-                </div>
+                <h4 className="text-sm font-semibold text-cream/50 uppercase tracking-wider">Beschreibung</h4>
+                <p className="text-cream/40 text-sm italic">Keine Beschreibung verfuegbar.</p>
+              </div>
+            )}
+
+            {/* Source platform link */}
+            {property.source_url && (
+              <div className="pt-2">
+                <a
+                  href={property.source_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 px-4 py-2.5 bg-dark-lighter border border-cream/10 rounded-xl text-cream/70 text-sm hover:border-coral/30 hover:text-coral transition-all"
+                >
+                  <span>🔗</span>
+                  <span>Originalinserat auf {property.source_platform === 'immoscout24' ? 'ImmoScout24' : property.source_platform === 'immowelt' ? 'Immowelt' : 'Kleinanzeigen'} ansehen</span>
+                </a>
               </div>
             )}
 

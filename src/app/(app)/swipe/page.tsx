@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import type { Property, SwipeDirection } from '@/types';
+import type { Property, SwipeDirection, Region } from '@/types';
 import SwipeStack from '@/components/swipe/SwipeStack';
 
 const DAILY_SWIPE_LIMIT = 10;
@@ -49,13 +49,67 @@ function LimitOverlay() {
   );
 }
 
+// Check if a property's zip code matches any of the user's region filters
+function matchesRegionFilter(property: Property, regions: Region[]): boolean {
+  if (!regions || regions.length === 0) return true;
+
+  for (const region of regions) {
+    // PLZ-based matching: check if the property zip starts with the same prefix
+    // (for radius approximation) or exact match
+    if (region.plz) {
+      const regionPlz = region.plz;
+      const propertyPlz = property.zip_code;
+
+      if (!propertyPlz) continue;
+
+      // Exact match
+      if (propertyPlz === regionPlz) return true;
+
+      // Approximate radius matching via PLZ prefix
+      // German PLZ zones: first 1-2 digits define large regions
+      // radius_km < 20: exact match only (first 4 digits)
+      // radius_km < 50: first 3 digits match
+      // radius_km < 100: first 2 digits match
+      // radius_km >= 100: first digit match
+      if (region.radius_km <= 15) {
+        // Very close: first 4 digits must match
+        if (propertyPlz.substring(0, 4) === regionPlz.substring(0, 4)) return true;
+      } else if (region.radius_km <= 30) {
+        // Close: first 3 digits must match
+        if (propertyPlz.substring(0, 3) === regionPlz.substring(0, 3)) return true;
+      } else if (region.radius_km <= 60) {
+        // Medium: first 2 digits must match
+        if (propertyPlz.substring(0, 2) === regionPlz.substring(0, 2)) return true;
+      } else {
+        // Wide: first digit must match
+        if (propertyPlz.substring(0, 1) === regionPlz.substring(0, 1)) return true;
+      }
+    }
+
+    // City-based matching
+    if (region.city) {
+      const regionCity = region.city.toLowerCase().trim();
+      const propertyCity = (property.city || '').toLowerCase().trim();
+      if (propertyCity === regionCity) return true;
+      // Partial match for city names (e.g. "Frankfurt" matches "Frankfurt am Main")
+      if (propertyCity.includes(regionCity) || regionCity.includes(propertyCity)) return true;
+    }
+  }
+
+  return false;
+}
+
 export default function SwipePage() {
   const [properties, setProperties] = useState<Property[]>([]);
   const [swipeCount, setSwipeCount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [swipeError, setSwipeError] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
 
-  const supabase = createClient();
+  // Stable supabase client reference
+  const supabaseRef = useRef(createClient());
+  const supabase = supabaseRef.current;
 
   // Get today's date string for swipe counting
   const getTodayString = () => {
@@ -67,6 +121,7 @@ export default function SwipePage() {
   useEffect(() => {
     async function init() {
       setIsLoading(true);
+      setError(null);
 
       // Get current user
       const { data: { user } } = await supabase.auth.getUser();
@@ -79,12 +134,19 @@ export default function SwipePage() {
       const today = getTodayString();
 
       // Fetch today's swipe count
-      const { count } = await supabase
+      const { count, error: swipeCountError } = await supabase
         .from('swipes')
         .select('*', { count: 'exact', head: true })
         .eq('user_id', user.id)
         .gte('swiped_at', `${today}T00:00:00`)
         .lt('swiped_at', `${today}T23:59:59.999`);
+
+      if (swipeCountError) {
+        console.error('Fehler beim Laden der Swipe-Daten:', swipeCountError);
+        setError(`Datenbankfehler: ${swipeCountError.message}. Bitte stelle sicher, dass die Datenbank-Tabellen korrekt eingerichtet sind.`);
+        setIsLoading(false);
+        return;
+      }
 
       const todaySwipes = count ?? 0;
       setSwipeCount(todaySwipes);
@@ -103,7 +165,7 @@ export default function SwipePage() {
 
       const swipedIds = (swipedData ?? []).map((s) => s.property_id);
 
-      // Fetch user preferences for basic matching
+      // Fetch user preferences for matching
       const { data: prefs } = await supabase
         .from('user_preferences')
         .select('*')
@@ -116,7 +178,7 @@ export default function SwipePage() {
         .select('*')
         .eq('is_active', true)
         .order('created_at', { ascending: false })
-        .limit(20);
+        .limit(50); // Fetch more to allow client-side region filtering
 
       // Exclude already-swiped properties
       if (swipedIds.length > 0) {
@@ -134,10 +196,41 @@ export default function SwipePage() {
         if (prefs.property_types?.length > 0) {
           query = query.in('property_type', prefs.property_types);
         }
+
+        // Filter no-gos at the DB level
+        const noGos: string[] = prefs.no_gos || [];
+        if (noGos.includes('erbpacht')) {
+          query = query.eq('is_erbpacht', false);
+        }
+        if (noGos.includes('denkmalschutz')) {
+          query = query.eq('is_denkmalschutz', false);
+        }
       }
 
-      const { data: propertyData } = await query;
-      setProperties(propertyData ?? []);
+      const { data: propertyData, error: propertiesError } = await query;
+
+      if (propertiesError) {
+        console.error('Fehler beim Laden der Properties:', propertiesError);
+        setError(`Fehler beim Laden der Immobilien: ${propertiesError.message}`);
+        setIsLoading(false);
+        return;
+      }
+
+      let filtered = propertyData ?? [];
+
+      // Client-side region/PLZ filtering (Supabase can't do geo-radius on PLZ)
+      if (prefs?.regions && prefs.regions.length > 0) {
+        const regions = prefs.regions as Region[];
+        filtered = filtered.filter((p) => matchesRegionFilter(p as Property, regions));
+      }
+
+      // Ensure images is always an array
+      const sanitized = filtered.map((p) => ({
+        ...p,
+        images: Array.isArray(p.images) ? p.images : [],
+      }));
+
+      setProperties(sanitized as Property[]);
       setIsLoading(false);
     }
 
@@ -150,16 +243,39 @@ export default function SwipePage() {
     async (propertyId: string, direction: SwipeDirection) => {
       if (!userId) return;
 
+      setSwipeError(null);
       const newCount = swipeCount + 1;
       setSwipeCount(newCount);
 
       // Insert swipe record
-      await supabase.from('swipes').insert({
+      const swipeData = {
         user_id: userId,
         property_id: propertyId,
         direction,
         swiped_at: new Date().toISOString(),
-      });
+      };
+
+      // Try insert first (most common case: first swipe on this property)
+      const { error: insertError } = await supabase
+        .from('swipes')
+        .insert(swipeData);
+
+      if (insertError) {
+        // If duplicate, try upsert to update direction
+        if (insertError.message.includes('duplicate') || insertError.code === '23505') {
+          const { error: upsertError } = await supabase.from('swipes').upsert(
+            swipeData,
+            { onConflict: 'user_id,property_id' }
+          );
+          if (upsertError) {
+            console.error('Failed to upsert swipe:', upsertError.message);
+            setSwipeError('Swipe konnte nicht gespeichert werden. Dein Like wird moeglicherweise nicht unter Matches angezeigt.');
+          }
+        } else {
+          console.error('Failed to save swipe:', insertError.message);
+          setSwipeError('Swipe konnte nicht gespeichert werden. Dein Like wird moeglicherweise nicht unter Matches angezeigt.');
+        }
+      }
     },
     [userId, swipeCount, supabase]
   );
@@ -188,10 +304,32 @@ export default function SwipePage() {
         )}
       </header>
 
+      {/* Swipe error toast */}
+      {swipeError && (
+        <div className="absolute top-16 left-4 right-4 z-50 p-3 rounded-xl bg-red-500/20 border border-red-500/30 backdrop-blur-sm">
+          <p className="text-red-300 text-sm text-center">{swipeError}</p>
+          <button
+            onClick={() => setSwipeError(null)}
+            className="absolute top-1 right-2 text-red-300/60 hover:text-red-300 text-lg"
+          >
+            &times;
+          </button>
+        </div>
+      )}
+
       {/* Main content */}
       <main className="flex-1 overflow-hidden">
         {isLoading ? (
           <ShimmerSkeleton />
+        ) : error ? (
+          <div className="flex flex-col items-center justify-center h-full text-center px-8 gap-5">
+            <div className="text-6xl">⚠️</div>
+            <h2 className="text-xl font-bold text-cream">Verbindungsproblem</h2>
+            <p className="text-cream/50 text-sm leading-relaxed max-w-xs">{error}</p>
+            <button onClick={() => window.location.reload()} className="btn-primary mt-2">
+              Erneut versuchen
+            </button>
+          </div>
         ) : isAtLimit ? (
           <LimitOverlay />
         ) : (

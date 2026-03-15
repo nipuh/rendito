@@ -21,6 +21,7 @@ const sortLabels: Record<SortOption, string> = {
 export default function LikesPage() {
   const [properties, setProperties] = useState<(Property & { swiped_at: string })[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<SortOption>('newest');
 
   const supabase = createClient();
@@ -28,6 +29,7 @@ export default function LikesPage() {
   useEffect(() => {
     async function fetchLikes() {
       setIsLoading(true);
+      setError(null);
 
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
@@ -35,23 +37,56 @@ export default function LikesPage() {
         return;
       }
 
-      const { data, error } = await supabase
+      // Step 1: Fetch liked swipes
+      const { data: swipes, error: swipesError } = await supabase
         .from('swipes')
-        .select('swiped_at, property:properties(*)')
+        .select('property_id, swiped_at')
         .eq('user_id', user.id)
         .eq('direction', 'like')
         .order('swiped_at', { ascending: false });
 
-      if (error || !data) {
+      if (swipesError) {
+        console.error('Fehler beim Laden der Likes:', swipesError);
+        setError(
+          swipesError.code === 'PGRST204' || swipesError.message?.includes('404') || swipesError.code === '42P01'
+            ? 'Datenbank-Tabellen nicht gefunden. Bitte stelle sicher, dass die Datenbank korrekt eingerichtet ist.'
+            : `Fehler beim Laden der Likes: ${swipesError.message}`
+        );
         setIsLoading(false);
         return;
       }
 
-      const mapped = data
-        .filter((row: Record<string, unknown>) => row.property != null)
-        .map((row: Record<string, unknown>) => ({
-          ...(row.property as Property),
-          swiped_at: row.swiped_at as string,
+      if (!swipes || swipes.length === 0) {
+        setIsLoading(false);
+        return;
+      }
+
+      // Step 2: Fetch the corresponding properties
+      const propertyIds = swipes.map((s) => s.property_id);
+      const { data: propertyData, error: propertiesError } = await supabase
+        .from('properties')
+        .select('*')
+        .in('id', propertyIds);
+
+      if (propertiesError) {
+        console.error('Fehler beim Laden der Properties:', propertiesError);
+        setError(`Fehler beim Laden der Immobilien: ${propertiesError.message}`);
+        setIsLoading(false);
+        return;
+      }
+
+      if (!propertyData) {
+        setIsLoading(false);
+        return;
+      }
+
+      // Step 3: Merge swipe timestamps with property data
+      const propertyMap = new Map(propertyData.map((p) => [p.id, p as Property]));
+      const mapped = swipes
+        .filter((s) => propertyMap.has(s.property_id))
+        .map((s) => ({
+          ...propertyMap.get(s.property_id)!,
+          swiped_at: s.swiped_at as string,
         }));
 
       setProperties(mapped);
@@ -96,6 +131,8 @@ export default function LikesPage() {
       <div className="max-w-lg mx-auto px-4 py-4">
         {isLoading ? (
           <LoadingSkeleton />
+        ) : error ? (
+          <ErrorState message={error} />
         ) : properties.length === 0 ? (
           <EmptyState />
         ) : (
@@ -131,7 +168,8 @@ export default function LikesPage() {
 }
 
 function PropertyCard({ property }: { property: Property }) {
-  const firstImage = property.images?.[0];
+  const images = Array.isArray(property.images) ? property.images.filter(Boolean) : [];
+  const firstImage = images[0];
 
   return (
     <Link
@@ -180,6 +218,26 @@ function PropertyCard({ property }: { property: Property }) {
         </div>
       </div>
     </Link>
+  );
+}
+
+function ErrorState({ message }: { message: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center text-center py-20 px-6 gap-5">
+      <div className="text-6xl">⚠️</div>
+      <h2 className="text-xl font-bold text-cream">
+        Verbindungsproblem
+      </h2>
+      <p className="text-cream/50 text-sm leading-relaxed max-w-xs">
+        {message}
+      </p>
+      <button
+        onClick={() => window.location.reload()}
+        className="btn-primary mt-2"
+      >
+        Erneut versuchen
+      </button>
+    </div>
   );
 }
 
