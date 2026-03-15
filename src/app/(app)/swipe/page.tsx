@@ -103,6 +103,8 @@ export default function SwipePage() {
   const [properties, setProperties] = useState<Property[]>([]);
   const [swipeCount, setSwipeCount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [swipeError, setSwipeError] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
 
   // Stable supabase client reference
@@ -119,6 +121,7 @@ export default function SwipePage() {
   useEffect(() => {
     async function init() {
       setIsLoading(true);
+      setError(null);
 
       // Get current user
       const { data: { user } } = await supabase.auth.getUser();
@@ -131,12 +134,19 @@ export default function SwipePage() {
       const today = getTodayString();
 
       // Fetch today's swipe count
-      const { count } = await supabase
+      const { count, error: swipeCountError } = await supabase
         .from('swipes')
         .select('*', { count: 'exact', head: true })
         .eq('user_id', user.id)
         .gte('swiped_at', `${today}T00:00:00`)
         .lt('swiped_at', `${today}T23:59:59.999`);
+
+      if (swipeCountError) {
+        console.error('Fehler beim Laden der Swipe-Daten:', swipeCountError);
+        setError(`Datenbankfehler: ${swipeCountError.message}. Bitte stelle sicher, dass die Datenbank-Tabellen korrekt eingerichtet sind.`);
+        setIsLoading(false);
+        return;
+      }
 
       const todaySwipes = count ?? 0;
       setSwipeCount(todaySwipes);
@@ -197,7 +207,15 @@ export default function SwipePage() {
         }
       }
 
-      const { data: propertyData } = await query;
+      const { data: propertyData, error: propertiesError } = await query;
+
+      if (propertiesError) {
+        console.error('Fehler beim Laden der Properties:', propertiesError);
+        setError(`Fehler beim Laden der Immobilien: ${propertiesError.message}`);
+        setIsLoading(false);
+        return;
+      }
+
       let filtered = propertyData ?? [];
 
       // Client-side region/PLZ filtering (Supabase can't do geo-radius on PLZ)
@@ -225,6 +243,7 @@ export default function SwipePage() {
     async (propertyId: string, direction: SwipeDirection) => {
       if (!userId) return;
 
+      setSwipeError(null);
       const newCount = swipeCount + 1;
       setSwipeCount(newCount);
 
@@ -244,12 +263,17 @@ export default function SwipePage() {
       if (insertError) {
         // If duplicate, try upsert to update direction
         if (insertError.message.includes('duplicate') || insertError.code === '23505') {
-          await supabase.from('swipes').upsert(
+          const { error: upsertError } = await supabase.from('swipes').upsert(
             swipeData,
             { onConflict: 'user_id,property_id' }
           );
+          if (upsertError) {
+            console.error('Failed to upsert swipe:', upsertError.message);
+            setSwipeError('Swipe konnte nicht gespeichert werden. Dein Like wird moeglicherweise nicht unter Matches angezeigt.');
+          }
         } else {
           console.error('Failed to save swipe:', insertError.message);
+          setSwipeError('Swipe konnte nicht gespeichert werden. Dein Like wird moeglicherweise nicht unter Matches angezeigt.');
         }
       }
     },
@@ -280,10 +304,32 @@ export default function SwipePage() {
         )}
       </header>
 
+      {/* Swipe error toast */}
+      {swipeError && (
+        <div className="absolute top-16 left-4 right-4 z-50 p-3 rounded-xl bg-red-500/20 border border-red-500/30 backdrop-blur-sm">
+          <p className="text-red-300 text-sm text-center">{swipeError}</p>
+          <button
+            onClick={() => setSwipeError(null)}
+            className="absolute top-1 right-2 text-red-300/60 hover:text-red-300 text-lg"
+          >
+            &times;
+          </button>
+        </div>
+      )}
+
       {/* Main content */}
       <main className="flex-1 overflow-hidden">
         {isLoading ? (
           <ShimmerSkeleton />
+        ) : error ? (
+          <div className="flex flex-col items-center justify-center h-full text-center px-8 gap-5">
+            <div className="text-6xl">⚠️</div>
+            <h2 className="text-xl font-bold text-cream">Verbindungsproblem</h2>
+            <p className="text-cream/50 text-sm leading-relaxed max-w-xs">{error}</p>
+            <button onClick={() => window.location.reload()} className="btn-primary mt-2">
+              Erneut versuchen
+            </button>
+          </div>
         ) : isAtLimit ? (
           <LimitOverlay />
         ) : (

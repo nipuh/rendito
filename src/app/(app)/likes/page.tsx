@@ -21,6 +21,7 @@ const sortLabels: Record<SortOption, string> = {
 export default function LikesPage() {
   const [properties, setProperties] = useState<(Property & { swiped_at: string })[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<SortOption>('newest');
 
   const supabase = createClient();
@@ -28,6 +29,7 @@ export default function LikesPage() {
   useEffect(() => {
     async function fetchLikes() {
       setIsLoading(true);
+      setError(null);
 
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
@@ -43,7 +45,18 @@ export default function LikesPage() {
         .eq('direction', 'like')
         .order('swiped_at', { ascending: false });
 
-      if (swipesError || !swipes || swipes.length === 0) {
+      if (swipesError) {
+        console.error('Fehler beim Laden der Likes:', swipesError);
+        setError(
+          swipesError.code === 'PGRST204' || swipesError.message?.includes('404') || swipesError.code === '42P01'
+            ? 'Datenbank-Tabellen nicht gefunden. Bitte stelle sicher, dass die Datenbank korrekt eingerichtet ist.'
+            : `Fehler beim Laden der Likes: ${swipesError.message}`
+        );
+        setIsLoading(false);
+        return;
+      }
+
+      if (!swipes || swipes.length === 0) {
         setIsLoading(false);
         return;
       }
@@ -55,7 +68,14 @@ export default function LikesPage() {
         .select('*')
         .in('id', propertyIds);
 
-      if (propertiesError || !propertyData) {
+      if (propertiesError) {
+        console.error('Fehler beim Laden der Properties:', propertiesError);
+        setError(`Fehler beim Laden der Immobilien: ${propertiesError.message}`);
+        setIsLoading(false);
+        return;
+      }
+
+      if (!propertyData) {
         setIsLoading(false);
         return;
       }
@@ -111,6 +131,8 @@ export default function LikesPage() {
       <div className="max-w-lg mx-auto px-4 py-4">
         {isLoading ? (
           <LoadingSkeleton />
+        ) : error ? (
+          <ErrorState message={error} />
         ) : properties.length === 0 ? (
           <EmptyState />
         ) : (
@@ -196,6 +218,26 @@ function PropertyCard({ property }: { property: Property }) {
         </div>
       </div>
     </Link>
+  );
+}
+
+function ErrorState({ message }: { message: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center text-center py-20 px-6 gap-5">
+      <div className="text-6xl">⚠️</div>
+      <h2 className="text-xl font-bold text-cream">
+        Verbindungsproblem
+      </h2>
+      <p className="text-cream/50 text-sm leading-relaxed max-w-xs">
+        {message}
+      </p>
+      <button
+        onClick={() => window.location.reload()}
+        className="btn-primary mt-2"
+      >
+        Erneut versuchen
+      </button>
+    </div>
   );
 }
 
