@@ -53,7 +53,12 @@ export default function LikeDetailPage() {
         return;
       }
 
-      setProperty(propertyData as Property);
+      // Ensure images is always a safe array
+      const sanitizedProperty = {
+        ...propertyData,
+        images: Array.isArray(propertyData.images) ? propertyData.images.filter(Boolean) : [],
+      };
+      setProperty(sanitizedProperty as Property);
 
       // Fetch existing cashflow inputs
       const { data: cfData } = await supabase

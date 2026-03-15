@@ -146,7 +146,8 @@ export default function LikesPage() {
 }
 
 function PropertyCard({ property }: { property: Property }) {
-  const firstImage = property.images?.[0];
+  const images = Array.isArray(property.images) ? property.images.filter(Boolean) : [];
+  const firstImage = images[0];
 
   return (
     <Link

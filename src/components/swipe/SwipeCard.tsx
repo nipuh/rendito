@@ -131,9 +131,10 @@ export default function SwipeCard({ property, onSwipe, isTop, stackIndex }: Swip
   const SWIPE_THRESHOLD = 100;
   const IMG_SWIPE_THRESHOLD = 40;
 
+  const images = useMemo(() => Array.isArray(property.images) ? property.images.filter(Boolean) : [], [property.images]);
   const overlays = useMemo(() => getSmartOverlays(property), [property]);
   const locationAdvantages = useMemo(() => extractLocationAdvantages(property), [property]);
-  const totalImages = property.images?.length || 0;
+  const totalImages = images.length;
 
   // --- Card drag handlers ---
   const handleStart = useCallback((clientX: number, clientY: number) => {
@@ -251,7 +252,7 @@ export default function SwipeCard({ property, onSwipe, isTop, stackIndex }: Swip
         pointerEvents: 'none' as const,
       };
 
-  const mainImage = property.images?.[activeImageIndex] || property.images?.[0];
+  const mainImage = images[activeImageIndex] || images[0];
 
   return (
     <div
@@ -318,7 +319,7 @@ export default function SwipeCard({ property, onSwipe, isTop, stackIndex }: Swip
           {/* Image pagination dots */}
           {totalImages > 1 && (
             <div className="absolute top-4 left-0 right-16 flex justify-center gap-1 z-10">
-              {property.images.slice(0, 12).map((_, i) => (
+              {images.slice(0, 12).map((_, i) => (
                 <div
                   key={i}
                   className={`h-1 rounded-full transition-all ${
@@ -465,7 +466,7 @@ export default function SwipeCard({ property, onSwipe, isTop, stackIndex }: Swip
                       transition: imgSwipeRef.current.isSwiping ? 'none' : 'transform 0.3s ease-out',
                     }}
                   >
-                    {property.images.map((img, i) => (
+                    {images.map((img, i) => (
                       <div
                         key={i}
                         className="relative h-full flex-shrink-0"
@@ -518,7 +519,7 @@ export default function SwipeCard({ property, onSwipe, isTop, stackIndex }: Swip
 
                 {/* Thumbnail strip */}
                 <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-hide">
-                  {property.images.map((img, i) => (
+                  {images.map((img, i) => (
                     <button
                       key={i}
                       className={`relative flex-shrink-0 w-14 h-14 rounded-lg overflow-hidden border-2 transition-all ${
@@ -623,15 +624,38 @@ export default function SwipeCard({ property, onSwipe, isTop, stackIndex }: Swip
                 <h4 className="text-sm font-semibold text-coral uppercase tracking-wider flex items-center gap-2">
                   <span>✨</span> KI-Zusammenfassung
                 </h4>
-                <p className="text-cream/70 text-sm leading-relaxed">{property.description_ai}</p>
+                <p className="text-cream/70 text-sm leading-relaxed whitespace-pre-line">{property.description_ai}</p>
               </div>
             )}
 
             {/* Original Description */}
             {property.description_original && (
               <div className="space-y-2">
+                <h4 className="text-sm font-semibold text-cream/50 uppercase tracking-wider">Inserat-Beschreibung</h4>
+                <p className="text-cream/60 text-sm leading-relaxed whitespace-pre-line">{property.description_original}</p>
+              </div>
+            )}
+
+            {/* Fallback if no descriptions at all */}
+            {!property.description_ai && !property.description_original && (
+              <div className="space-y-2">
                 <h4 className="text-sm font-semibold text-cream/50 uppercase tracking-wider">Beschreibung</h4>
-                <p className="text-cream/50 text-sm leading-relaxed line-clamp-6">{property.description_original}</p>
+                <p className="text-cream/40 text-sm italic">Keine Beschreibung verfuegbar.</p>
+              </div>
+            )}
+
+            {/* Source platform link */}
+            {property.source_url && (
+              <div className="pt-2">
+                <a
+                  href={property.source_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 px-4 py-2.5 bg-dark-lighter border border-cream/10 rounded-xl text-cream/70 text-sm hover:border-coral/30 hover:text-coral transition-all"
+                >
+                  <span>🔗</span>
+                  <span>Originalinserat auf {property.source_platform === 'immoscout24' ? 'ImmoScout24' : property.source_platform === 'immowelt' ? 'Immowelt' : 'Kleinanzeigen'} ansehen</span>
+                </a>
               </div>
             )}
 

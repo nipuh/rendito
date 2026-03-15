@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import type { Property, SwipeDirection } from '@/types';
+import type { Property, SwipeDirection, Region } from '@/types';
 import SwipeStack from '@/components/swipe/SwipeStack';
 
 const DAILY_SWIPE_LIMIT = 10;
@@ -49,13 +49,65 @@ function LimitOverlay() {
   );
 }
 
+// Check if a property's zip code matches any of the user's region filters
+function matchesRegionFilter(property: Property, regions: Region[]): boolean {
+  if (!regions || regions.length === 0) return true;
+
+  for (const region of regions) {
+    // PLZ-based matching: check if the property zip starts with the same prefix
+    // (for radius approximation) or exact match
+    if (region.plz) {
+      const regionPlz = region.plz;
+      const propertyPlz = property.zip_code;
+
+      if (!propertyPlz) continue;
+
+      // Exact match
+      if (propertyPlz === regionPlz) return true;
+
+      // Approximate radius matching via PLZ prefix
+      // German PLZ zones: first 1-2 digits define large regions
+      // radius_km < 20: exact match only (first 4 digits)
+      // radius_km < 50: first 3 digits match
+      // radius_km < 100: first 2 digits match
+      // radius_km >= 100: first digit match
+      if (region.radius_km <= 15) {
+        // Very close: first 4 digits must match
+        if (propertyPlz.substring(0, 4) === regionPlz.substring(0, 4)) return true;
+      } else if (region.radius_km <= 30) {
+        // Close: first 3 digits must match
+        if (propertyPlz.substring(0, 3) === regionPlz.substring(0, 3)) return true;
+      } else if (region.radius_km <= 60) {
+        // Medium: first 2 digits must match
+        if (propertyPlz.substring(0, 2) === regionPlz.substring(0, 2)) return true;
+      } else {
+        // Wide: first digit must match
+        if (propertyPlz.substring(0, 1) === regionPlz.substring(0, 1)) return true;
+      }
+    }
+
+    // City-based matching
+    if (region.city) {
+      const regionCity = region.city.toLowerCase().trim();
+      const propertyCity = (property.city || '').toLowerCase().trim();
+      if (propertyCity === regionCity) return true;
+      // Partial match for city names (e.g. "Frankfurt" matches "Frankfurt am Main")
+      if (propertyCity.includes(regionCity) || regionCity.includes(propertyCity)) return true;
+    }
+  }
+
+  return false;
+}
+
 export default function SwipePage() {
   const [properties, setProperties] = useState<Property[]>([]);
   const [swipeCount, setSwipeCount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [userId, setUserId] = useState<string | null>(null);
 
-  const supabase = createClient();
+  // Stable supabase client reference
+  const supabaseRef = useRef(createClient());
+  const supabase = supabaseRef.current;
 
   // Get today's date string for swipe counting
   const getTodayString = () => {
@@ -103,7 +155,7 @@ export default function SwipePage() {
 
       const swipedIds = (swipedData ?? []).map((s) => s.property_id);
 
-      // Fetch user preferences for basic matching
+      // Fetch user preferences for matching
       const { data: prefs } = await supabase
         .from('user_preferences')
         .select('*')
@@ -116,7 +168,7 @@ export default function SwipePage() {
         .select('*')
         .eq('is_active', true)
         .order('created_at', { ascending: false })
-        .limit(20);
+        .limit(50); // Fetch more to allow client-side region filtering
 
       // Exclude already-swiped properties
       if (swipedIds.length > 0) {
@@ -134,10 +186,33 @@ export default function SwipePage() {
         if (prefs.property_types?.length > 0) {
           query = query.in('property_type', prefs.property_types);
         }
+
+        // Filter no-gos at the DB level
+        const noGos: string[] = prefs.no_gos || [];
+        if (noGos.includes('erbpacht')) {
+          query = query.eq('is_erbpacht', false);
+        }
+        if (noGos.includes('denkmalschutz')) {
+          query = query.eq('is_denkmalschutz', false);
+        }
       }
 
       const { data: propertyData } = await query;
-      setProperties(propertyData ?? []);
+      let filtered = propertyData ?? [];
+
+      // Client-side region/PLZ filtering (Supabase can't do geo-radius on PLZ)
+      if (prefs?.regions && prefs.regions.length > 0) {
+        const regions = prefs.regions as Region[];
+        filtered = filtered.filter((p) => matchesRegionFilter(p as Property, regions));
+      }
+
+      // Ensure images is always an array
+      const sanitized = filtered.map((p) => ({
+        ...p,
+        images: Array.isArray(p.images) ? p.images : [],
+      }));
+
+      setProperties(sanitized as Property[]);
       setIsLoading(false);
     }
 
@@ -161,19 +236,19 @@ export default function SwipePage() {
         swiped_at: new Date().toISOString(),
       };
 
-      // Try upsert first (requires UPDATE RLS policy), fall back to insert
-      const { error } = await supabase.from('swipes').upsert(
-        swipeData,
-        { onConflict: 'user_id,property_id' }
-      );
+      // Try insert first (most common case: first swipe on this property)
+      const { error: insertError } = await supabase
+        .from('swipes')
+        .insert(swipeData);
 
-      if (error) {
-        // Fallback: plain insert (works without UPDATE policy, ignores duplicates)
-        const { error: insertError } = await supabase
-          .from('swipes')
-          .insert(swipeData);
-
-        if (insertError && !insertError.message.includes('duplicate')) {
+      if (insertError) {
+        // If duplicate, try upsert to update direction
+        if (insertError.message.includes('duplicate') || insertError.code === '23505') {
+          await supabase.from('swipes').upsert(
+            swipeData,
+            { onConflict: 'user_id,property_id' }
+          );
+        } else {
           console.error('Failed to save swipe:', insertError.message);
         }
       }
